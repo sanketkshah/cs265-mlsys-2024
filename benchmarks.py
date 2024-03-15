@@ -2,9 +2,10 @@ from torchbenchmark.util.model import BenchmarkModel
 from torchbenchmark.models import hf_Bert, resnet50, resnet152
 from typing import List, Dict, Any
 import torch.nn as nn
+import torch
 import torch.optim as optim
 import importlib
-from graph_tracer import SEPFunction
+from graph_tracer import SEPFunction, compile
 
 model_names: List[str] = [
     "torchbenchmark.models.hf_Bert.Model",
@@ -54,13 +55,13 @@ class Experiment:
 
         elif self.model_type in (resnet50.Model, resnet152.Model):
             self.loss_fn = model.loss_fn
-            self.example_outputs = model.example_outputs
+            self.example_inputs = model.example_inputs[0]
 
             def resnet_train_step(
                 model: nn.Module, optim: optim.Optimizer, example_inputs: Any
             ):
-                output = model(example_inputs[0])
-                target = self.example_outputs[0]
+                output = model(example_inputs)
+                target = torch.rand_like(output)
                 loss = self.loss_fn(output, target)
                 loss = SEPFunction.apply(loss)
                 loss.backward()
@@ -72,9 +73,13 @@ class Experiment:
     def run(self):
         self.train_step(self.model, self.optimizer, self.example_inputs)
         print("Successful.")
+        
 
 if __name__ == "__main__":
 
-    exp = Experiment(model_names[1], model_batch_sizes[model_names[1]])
-    exp.run()
+    exp = Experiment(model_names[0], model_batch_sizes[model_names[0]])
+    # exp.run()
+    compiled_fn = compile(exp.train_step, lambda x, y : x)
+    compiled_fn(exp.model, exp.optimizer, exp.example_inputs)
+
 
