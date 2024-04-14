@@ -77,8 +77,8 @@ class Experiment:
 
 if __name__ == "__main__":
 
-    exp = Experiment(model_names[0], model_batch_sizes[model_names[0]])
-    # exp.run()
+    exp = Experiment(model_names[1], model_batch_sizes[model_names[1]])
+    exp.run()
     compiled_fn = compile(exp.train_step, lambda x, y : x)
     compiled_fn(exp.model, exp.optimizer, exp.example_inputs)
 

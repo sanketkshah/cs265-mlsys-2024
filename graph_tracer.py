@@ -1,5 +1,4 @@
 import torch
-import torch.distributed as dist
 from contextlib import contextmanager, nullcontext
 from copy import copy
 from functools import partial, wraps
