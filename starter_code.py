@@ -1,13 +1,15 @@
-from functools import wraps
-import os
 import logging
+import os
+from functools import wraps
 from typing import Any
-import torch.multiprocessing as mp
+
 import torch
-import torch.nn as nn
-from graph_tracer import compile, SEPFunction
-from graph_prof import GraphProfiler
 import torch.fx as fx
+import torch.multiprocessing as mp
+import torch.nn as nn
+
+from graph_prof import GraphProfiler
+from graph_tracer import SEPFunction, compile
 
 # This is the dummy model that is for use in starter code. But we will
 # experiment with Resnet and Bert models from Torch Benchmark suite.
@@ -44,7 +46,7 @@ class WrappedDummyModel(nn.Module):
 # This is the train_step function that takes in a model, optimizer and an input
 # mini batch and calls the forward pass, loss function and the optimizer step. A
 # computational graph corresponding to a train_step will be captured by the
-# compiler. 
+# compiler.
 
 
 def train_step(
@@ -66,12 +68,16 @@ def train_step(
 
 
 def graph_transformation(gm: fx.GraphModule, args: Any) -> fx.GraphModule:
-    print(gm.graph)
-
     graph_profiler = GraphProfiler(gm)
+    warm_up_iters, profile_iters = 2, 3
     with torch.no_grad():
-        graph_profiler.run(*args)
-
+        for _ in range(warm_up_iters):
+            graph_profiler.run(*args)
+        graph_profiler.reset_stats()
+        for _ in range(profile_iters):
+            graph_profiler.run(*args)
+    graph_profiler.aggregate_stats()
+    graph_profiler.print_stats()
     return gm
 
 
@@ -99,7 +105,7 @@ def graph_transformation(gm: fx.GraphModule, args: Any) -> fx.GraphModule:
 def experiment():
     logging.getLogger().setLevel(logging.DEBUG)
     torch.manual_seed(20)
-    batch_size = 100
+    batch_size = 1000
     layers = 10
     dim = 100
     num_iters = 5
@@ -109,6 +115,12 @@ def experiment():
     optim = torch.optim.Adam(
         model.parameters(), lr=0.01, foreach=False, fused=True, capturable=True
     )
+
+    for param in model.parameters():
+        if param.requires_grad:
+            param.grad = torch.rand_like(param)
+    optim.step()
+    optim.zero_grad()
 
     compiled_fn = compile(train_step, graph_transformation)
     compiled_fn(model, optim, batch)

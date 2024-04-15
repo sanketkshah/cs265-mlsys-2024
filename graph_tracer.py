@@ -1,26 +1,27 @@
-import torch
 from contextlib import contextmanager, nullcontext
 from copy import copy
-from functools import partial, wraps
 from dataclasses import dataclass
+from functools import partial, wraps
+from typing import Any, Callable, Dict, List, Optional, Union
+
+import torch
 
 # We need to import _functional_collectives to trigger op registration
 import torch.distributed._functional_collectives
-from torch.distributed._functional_collectives import all_reduce
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils._pytree as pytree
 from torch import fx
+from torch._subclasses.fake_tensor import FakeTensorMode
+from torch.distributed._functional_collectives import all_reduce
 from torch.distributed._spmd.api import SPMD_DECOMP_TABLE
-from torch.fx.graph import _PyTreeCodeGen, _PyTreeInfo, CodeGen
-from typing import Any, Callable, List, Dict, Union, Optional
-from torch.nn.utils import stateless
-from torch.utils.hooks import RemovableHandle
 from torch.distributed._tensor.op_schema import OpSchema, OutputSharding
 from torch.distributed._tensor.ops.utils import register_prop_rule
 from torch.distributed._tensor.placement_types import DTensorSpec
-from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.fx.experimental.proxy_tensor import make_fx
+from torch.fx.graph import CodeGen, _PyTreeCodeGen, _PyTreeInfo
+from torch.nn.utils import stateless
+from torch.utils.hooks import RemovableHandle
 
 
 def sep(x: torch.Tensor) -> torch.Tensor:
@@ -256,6 +257,19 @@ def _compile(func: Callable, *args: Any, **kwargs: Any):
     }
 
     flat_state, _ = pytree.tree_flatten([params_and_buffers, named_states])
+
+    for node in gm.graph.nodes:
+        if node.target == torch.ops.aten.detach.default:
+            input_node = node.all_input_nodes[0]
+            node.replace_all_uses_with(input_node)
+            if len(node.users) == 0:
+                gm.graph.erase_node(node)
+        if node.target == torch.ops.dummy.tag_grad.default:
+            grad_node = node.all_input_nodes[0]
+            node.replace_all_uses_with(grad_node)
+            if len(node.users) == 0:
+                gm.graph.erase_node(node)
+
     gm = _to_caller_flattened_graph_module(gm)
 
     return _CompiledResult(gm, mod, opt, flat_state)
