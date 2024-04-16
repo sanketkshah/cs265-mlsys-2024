@@ -52,6 +52,9 @@ def get_name_to_node_map(gm: fx.GraphModule) -> Dict[fx.Node, str]:
 
 
 def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
+    # NOTE: You need to create the function for your project and call it inside
+    # the graph_transformation function after performing graph profiling.
+
     # In this example we are going to recompute one of the relu activations for the
     # backward pass instead of saving it. We know from our custom function
     # that we have 4 intermeidate nodes: ['mm', 'relu', 'mm_1', 'relu_1']
@@ -63,9 +66,9 @@ def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
     # First back use is at node 't'
 
     # NOTE: For your project, you will use GraphProfiler to identify the
-    # intermediate nodes, their first back uses, their last forward uses and
-    # then MuTWO's algorithm to select the intermediate nodes to recompute and
-    # checkpoint (retain). The nodes required to recompute any of the
+    # intermediate nodes, their first back access, last forward access and
+    # then MuTWO's algorithm to select the intermediate 'nodes_to_recompute' and
+    # checkpoint (retain). The 'nodes_required_to_recompute' any of the
     # intermediate nodes MUST be a combination of the placeholder nodes and the
     # intermediate nodes that are checkpointed.
 
@@ -80,6 +83,7 @@ def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
         inputs=nodes_required_to_recompute,
         outputs=node_to_recompute,
     )
+    print("Extracted recomputation sub-graph: ")
     recompute_subgraph.print_tabular()
 
     # Insert the nodes of the new sub-graph in the old graph before the first
@@ -113,6 +117,7 @@ if __name__ == "__main__":
     # Create a graph module by tracing the the custom function with the given inputs
     graph_module = make_fx(custom_fn)(w1, w2, x)
     graph_module = remove_detach_nodes(graph_module)
+    print("Original graph of custom fn (fwd+bwd): ")
     graph_module.graph.print_tabular()
 
     # Obtain the gradients of (w1, w2) using x as input to the traced function
@@ -121,8 +126,9 @@ if __name__ == "__main__":
     with torch.no_grad():
         old_grads = graph_module(w1, w2, x)
 
-    # Apply the activation checkpointing algorithm
+    # Apply the activation checkpointing algorithm (check new node 'relu_2')
     new_graph_module = activation_checkpointing(graph_module)
+    print("Modified graph of custom fn (fwd+bwd+activation_checkpointing): ")
     new_graph_module.graph.print_tabular()
 
     # Obtain the gradients of (w1, w2) using x as input to the activation
@@ -132,5 +138,6 @@ if __name__ == "__main__":
 
     # Verify that gradients produced with activation checkpointing equal the
     # ones obtained earlier with no optimization.
+    print("Result verification")
     for old_grad, new_grad in zip(old_grads, new_grads):
         print(torch.allclose(old_grad, new_grad))
