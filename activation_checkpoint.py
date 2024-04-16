@@ -4,6 +4,7 @@ import torch.fx as fx
 from typing import Dict
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch._functorch.partitioners import _extract_graph_with_inputs_outputs
+from graph_tracer import SEPFunction
 
 
 # We define a custom function that takes in two weight matrices that require
@@ -17,6 +18,7 @@ def custom_fn(w1: torch.Tensor, w2: torch.Tensor, x: torch.Tensor) -> torch.Tens
     z = torch.mm(z, w2)
     z = nn.functional.relu(z)
     z = z.sum()
+    z = SEPFunction.apply(z)
     z.backward()
     return w1.grad, w2.grad
 
@@ -44,7 +46,7 @@ def remove_detach_nodes(gm: fx.GraphModule) -> fx.GraphModule:
     return gm
 
 
-def get_name_to_node_map(gm: fx.GraphModule) -> Dict[fx.Node, str]:
+def get_name_to_node_map(gm: fx.GraphModule) -> Dict[str, fx.Node]:
     name_to_node = {}
     for node in gm.graph.nodes:
         name_to_node[node.name] = node
@@ -57,25 +59,29 @@ def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
 
     # In this example we are going to recompute one of the relu activations for the
     # backward pass instead of saving it. We know from our custom function
-    # that we have 4 intermeidate nodes: ['mm', 'relu', 'mm_1', 'relu_1']
+    # that we have 2 intermeidate nodes: ['relu', 'relu_1']
 
     # So the intermediate node to recompute is: ['relu'] and
-    # intermediate nodes to checkpoint (retain) are: ['mm', 'mm_1', 'relu_1']
+    # intermediate nodes to checkpoint (retain) are: ['relu_1']
 
-    # Nodes required to recompute 'relu' are ['mm']
+    # Nodes required to recompute 'relu' are ['w1_1', 'x_1']
     # First back use is at node 't'
 
     # NOTE: For your project, you will use GraphProfiler to identify the
     # intermediate nodes, their first back access, last forward access and
     # then MuTWO's algorithm to select the intermediate 'nodes_to_recompute' and
     # checkpoint (retain). The 'nodes_required_to_recompute' any of the
-    # intermediate nodes MUST be a combination of the placeholder nodes and the
+    # intermediate nodes MUST be a subset of the placeholder nodes and the
     # intermediate nodes that are checkpointed.
 
     name_to_node = get_name_to_node_map(gm)
     first_back_access = name_to_node["t"]
     node_to_recompute = [name_to_node["relu"]]
-    nodes_required_to_recompute = [name_to_node["mm"]]
+    node_to_recompute_names = ['relu']
+    nodes_required_to_recompute = [name_to_node["w1_1"], name_to_node["x_1"]]
+
+    # NOTE: we cannot directly use 'mm' to recompute 'relu' since 'mm' is not an
+    # intermediate node that is retained (checkpointed).
 
     # Obtain a sub-graph that recomputes the required nodes
     recompute_subgraph = _extract_graph_with_inputs_outputs(
@@ -93,14 +99,18 @@ def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
             if n.op == "placeholder" or n.op == "output":
                 continue
             # Copy the nodes of the new sub-graph to old graph and transform its
-            # inputs to match the old-graph
+            # inputs to match the old-graph inputs. The arg_transform function
+            # will pass the input arguments of the new node and will expect a
+            # mapping to the nodes of the old graph. 
             new_node = gm.graph.node_copy(
-                n, arg_transform=lambda x: name_to_node[x.name]
+                n, arg_transform = lambda arg: name_to_node[arg.name]
             )
-            old_node = node_to_recompute[0]
-            # Replace all the uses of the old node with new recomputation node
-            replace_subsequent_uses_of(gm.graph, old_node=old_node, new_node=new_node)
-            # Add the recomputed node to our mapping
+
+            if n.name in node_to_recompute_names:
+                old_node = name_to_node[n.name]
+                # Replace all the uses of the old node with new recomputation node
+                replace_subsequent_uses_of(gm.graph, old_node=old_node, new_node=new_node)
+            # Add the new node to our name to node mapping
             name_to_node[n.name] = new_node
 
     gm.graph.lint()
