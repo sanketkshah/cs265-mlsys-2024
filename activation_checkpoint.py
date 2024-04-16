@@ -77,7 +77,7 @@ def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
     name_to_node = get_name_to_node_map(gm)
     first_back_access = name_to_node["t"]
     node_to_recompute = [name_to_node["relu"]]
-    node_to_recompute_names = ['relu']
+    node_to_recompute_names = ["relu"]
     nodes_required_to_recompute = [name_to_node["w1_1"], name_to_node["x_1"]]
 
     # NOTE: we cannot directly use 'mm' to recompute 'relu' since 'mm' is not an
@@ -101,15 +101,17 @@ def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
             # Copy the nodes of the new sub-graph to old graph and transform its
             # inputs to match the old-graph inputs. The arg_transform function
             # will pass the input arguments of the new node and will expect a
-            # mapping to the nodes of the old graph. 
+            # mapping to the nodes of the old graph.
             new_node = gm.graph.node_copy(
-                n, arg_transform = lambda arg: name_to_node[arg.name]
+                n, arg_transform=lambda arg: name_to_node[arg.name]
             )
 
             if n.name in node_to_recompute_names:
                 old_node = name_to_node[n.name]
                 # Replace all the uses of the old node with new recomputation node
-                replace_subsequent_uses_of(gm.graph, old_node=old_node, new_node=new_node)
+                replace_subsequent_uses_of(
+                    gm.graph, old_node=old_node, new_node=new_node
+                )
             # Add the new node to our name to node mapping
             name_to_node[n.name] = new_node
 
