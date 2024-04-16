@@ -216,7 +216,9 @@ class GraphProfiler(fx.Interpreter):
             tensor = None
             torch.cuda.synchronize()
             self.swapped_memory -= p_info.memory_size
-            assert self.swapped_memory >= 0, f"Swapped memory is less than zero {self.swapped_memory}"
+            assert (
+                self.swapped_memory >= 0
+            ), f"Swapped memory is less than zero {self.swapped_memory}"
             swap_time = swap_start_event.elapsed_time(swap_end_event)
             self.node_swap_times.setdefault(p_node, []).append(swap_time)
 
