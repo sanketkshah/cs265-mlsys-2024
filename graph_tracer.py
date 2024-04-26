@@ -283,12 +283,14 @@ COMPILED_OBJECT_KEY = "_compiled_obj"
 def compile(func: Callable, gm_transformation: Callable):
     @wraps(func)
     def wrapper(*args, **kwargs):
+        first_iter = False
         compiled_obj = wrapper.__dict__.get(COMPILED_OBJECT_KEY, None)
         if compiled_obj is None:
+            first_iter = True
             compiled_obj = _compile(func, *args, **kwargs)
             wrapper.__dict__[COMPILED_OBJECT_KEY] = compiled_obj
         flat_inps = compiled_obj.flat_state + pytree.tree_flatten([args, kwargs])[0]
-        if gm_transformation:
+        if first_iter and gm_transformation:
             compiled_obj.gm = gm_transformation(compiled_obj.gm, flat_inps)
         with torch.no_grad():
             output = compiled_obj.gm(*flat_inps)[0]
