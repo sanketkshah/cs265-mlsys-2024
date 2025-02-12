@@ -12,7 +12,7 @@ from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 
 # This is the dummy model that is for use in starter code. But we will
-# experiment with Resnet and Bert models from Torch Benchmark suite.
+# experiment with Resnet and Transformer model.
 
 
 class DummyModel(nn.Module):
@@ -27,20 +27,11 @@ class DummyModel(nn.Module):
         return self.mod(x)
 
 
-# Anymodel that is used will be wrapped with this model. We do this to call a
+# We wrap the loss with a separator function to call a
 # dummy function 'SEPFunction', which is the separator function, that will call
 # an identity operator at the end of the forward pass. This identity operator
 # will get recorded in the computational graph and will inform you where the
 # backward pass ends.
-
-
-class WrappedDummyModel(nn.Module):
-    def __init__(self, mod: nn.Module):
-        super().__init__()
-        self.mod = mod
-
-    def forward(self, x):
-        return SEPFunction.apply(self.mod(x))
 
 
 # This is the train_step function that takes in a model, optimizer and an input
@@ -52,8 +43,9 @@ class WrappedDummyModel(nn.Module):
 def train_step(
     model: torch.nn.Module, optim: torch.optim.Optimizer, batch: torch.Tensor
 ):
-    out: torch.Tensor = model(batch)
-    out.sum().backward()
+    loss =  model(batch).sum()
+    loss = SEPFunction.apply(loss)
+    loss.backward()
     optim.step()
     optim.zero_grad()
 
@@ -68,6 +60,7 @@ def train_step(
 
 
 def graph_transformation(gm: fx.GraphModule, args: Any) -> fx.GraphModule:
+    print(gm.graph)
     graph_profiler = GraphProfiler(gm)
     warm_up_iters, profile_iters = 2, 3
     with torch.no_grad():
@@ -109,8 +102,7 @@ def experiment():
     layers = 10
     dim = 100
     num_iters = 5
-    dummy_model = DummyModel(dim=dim, layers=layers)
-    model = WrappedDummyModel(dummy_model).cuda()
+    model = DummyModel(dim=dim, layers=layers).cuda()
     batch = torch.randn(batch_size, dim).cuda()
     optim = torch.optim.Adam(
         model.parameters(), lr=0.01, foreach=False, fused=True, capturable=True

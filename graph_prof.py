@@ -78,7 +78,7 @@ class GraphProfiler(fx.Interpreter):
         *args,
         initial_env: Dict[fx.Node, Any] | None = None,
         enable_io_processing: bool = True
-    ) -> torch.Any:
+    ) -> Any:
         return super().run(
             *args, initial_env=initial_env, enable_io_processing=enable_io_processing
         )

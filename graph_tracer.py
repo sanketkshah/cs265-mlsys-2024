@@ -3,6 +3,7 @@ from copy import copy
 from dataclasses import dataclass
 from functools import partial, wraps
 from typing import Any, Callable, Dict, List, Optional, Union
+from utils import SPMD_DECOMP_TABLE
 
 import torch
 
@@ -14,9 +15,8 @@ import torch.utils._pytree as pytree
 from torch import fx
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.distributed._functional_collectives import all_reduce
-from torch.distributed._spmd.api import SPMD_DECOMP_TABLE
-from torch.distributed._tensor.op_schema import OpSchema, OutputSharding
-from torch.distributed._tensor.ops.utils import register_prop_rule
+from torch.distributed.tensor import DTensor
+from torch.distributed.tensor._op_schema import OpSchema, OutputSharding
 from torch.distributed._tensor.placement_types import DTensorSpec
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.graph import CodeGen, _PyTreeCodeGen, _PyTreeInfo
@@ -45,15 +45,15 @@ def _identity_prop_rule(op_schema: OpSchema) -> OutputSharding:
 
     return OutputSharding(output_spec=DTensorSpec(x.mesh, x.placements))
 
-
-@register_prop_rule(torch.ops.separator.sep.default)
 def _prop_sepm(op_schema: OpSchema) -> OutputSharding:
     return _identity_prop_rule(op_schema)
 
-
-@register_prop_rule(torch.ops.separator.sep_backward.default)
 def _prop_sepm_backward(op_schema: OpSchema) -> OutputSharding:
     return _identity_prop_rule(op_schema)
+
+DTensor._op_dispatcher.sharding_propagator.register_sharding_prop_rule(torch.ops.separator.sep.default, _prop_sepm)
+DTensor._op_dispatcher.sharding_propagator.register_sharding_prop_rule(torch.ops.separator.sep_backward.default, _prop_sepm_backward)
+
 
 
 class SEPFunction(torch.autograd.Function):
