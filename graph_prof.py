@@ -476,6 +476,7 @@ class GraphProfiler(fx.Interpreter):
         self,
         *args,
         initial_env: Dict[fx.Node, Any] | None = None,
+<<<<<<< HEAD
         enable_io_processing: bool = True,
     ) -> Any:
         self.param_and_opt_state_memory = torch.cuda.memory_allocated()
@@ -483,6 +484,12 @@ class GraphProfiler(fx.Interpreter):
             *args,
             initial_env=initial_env,
             enable_io_processing=enable_io_processing,
+=======
+        enable_io_processing: bool = True
+    ) -> Any:
+        return super().run(
+            *args, initial_env=initial_env, enable_io_processing=enable_io_processing
+>>>>>>> 2aa45ba0f58ef532c3e4812014628bb699bedfae
         )
 
         return result
