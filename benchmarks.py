@@ -1,92 +1,80 @@
+import importlib
 from typing import Any, Dict, List
 
 import torch
 import torch.fx as fx
 import torch.nn as nn
 import torch.optim as optim
-from torchbenchmark.models import resnet18, resnet50
+from torchbenchmark.models import hf_Bert, resnet18, resnet50
+from torchbenchmark.util.model import BenchmarkModel
 
 from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 
 model_names: List[str] = [
-    "Transformer",
-    "Resnet18",
-    "Resnet50",
+    "torchbenchmark.models.hf_Bert.Model",
+    "torchbenchmark.models.resnet18.Model",
+    "torchbenchmark.models.resnet50.Model",
+]
+
+actual_model_names: List[str] = [
+    "hf_Bert",
+    "resnet18",
+    "resnet50",
 ]
 
 model_batch_sizes: Dict[str, int] = {
-    "Transformer": 4,
-    "Resnet18": 16,
-    "Resnet50": 4,
+    "hf_Bert": 4,
+    "resnet18": 16,
+    "resnet50": 4,
 }
 
 
 class Experiment:
     def __init__(self, model_name: str, batch_size: int, extra_args=[]):
-        assert model_name in model_names, (
-            f"Model {model_name} not found in model names {model_names}"
+        pos = model_name.rfind(".")
+        module = importlib.import_module(model_name[:pos])
+        model_class = getattr(module, model_name[(pos + 1) :])
+
+        model: BenchmarkModel = model_class(
+            "train", "cuda", batch_size=batch_size, extra_args=extra_args
         )
-        dev = torch.device("cuda")
-        self.model_name = model_name
+        self.model: nn.Module = model.model
+        self.model_type = type(model)
         self.batch_size = batch_size
+        self.example_inputs = model.example_inputs
 
-        if self.model_name == "Transformer":
-            vocab_size = 2048
-            bsz, seq_len = self.batch_size, 256
-            with torch.device(dev):
-                model_args = ModelArgs(
-                    n_layers=8,
-                    n_heads=4,
-                    vocab_size=vocab_size,
-                    max_seq_len=seq_len,
-                    dropout_p=0.1,
-                )
-                self.model = Transformer(model_args)
-            src = torch.randint(0, vocab_size, (bsz, seq_len), device=dev)
-            tgt = torch.randint(0, vocab_size, (bsz, seq_len), device=dev)
-            self.example_inputs = (src, tgt)
+        if self.model_type == hf_Bert.Model:
 
-            def transformer_train_step(
+            def bert_train_step(
                 model: nn.Module, optim: optim.Optimizer, example_inputs: Any
             ):
-                loss = self.loss_fn(model(example_inputs[0]), example_inputs[1])
+                loss = model(**example_inputs).loss
                 loss = SEPFunction.apply(loss)
                 loss.backward()
                 optim.step()
                 optim.zero_grad()
 
-            self.train_step = transformer_train_step
-            self.optimizer = optim.Adam(
-                self.model.parameters(), lr=1e-2, fused=True, capturable=True
-            )
+            self.train_step = bert_train_step
+            self.optimizer: optim.Optimizer = model.optimizer
 
-        elif self.model_name in ["Resnet18", "Resnet50"]:
-            inp = torch.randn(self.batch_size, 3, 224, 224, device=dev)
-            num_classes = 10
-            target = torch.randint(0, num_classes, (self.batch_size,), device=dev)
-            self.example_inputs = (inp, target)
-            with torch.device(dev):
-                self.model = resnet18() if self.model_name == "Resnet18" else resnet50()
+        elif self.model_type in (resnet18.Model, resnet50.Model):
+            self.loss_fn = model.loss_fn
+            self.example_inputs = model.example_inputs[0]
 
             def resnet_train_step(
                 model: nn.Module, optim: optim.Optimizer, example_inputs: Any
             ):
-                loss = self.loss_fn(model(example_inputs[0]), example_inputs[1])
+                output = model(example_inputs)
+                target = torch.rand_like(output)
+                loss = self.loss_fn(output, target)
                 loss = SEPFunction.apply(loss)
                 loss.backward()
                 optim.step()
                 optim.zero_grad()
 
-            self.optimizer = optim.Adam(
-                self.model.parameters(), lr=1e-2, fused=True, capturable=True
-            )
+            self.optimizer: optim.Optimizer = model.opt
             self.train_step = resnet_train_step
-
-    def loss_fn(self, logits: torch.Tensor, targets: torch.Tensor):
-        return F.cross_entropy(
-            logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
-        )
 
     def init_opt_states(self):
         for param in self.model.parameters():
