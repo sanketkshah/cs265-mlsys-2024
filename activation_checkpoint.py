@@ -54,10 +54,7 @@ def remove_detach_nodes(gm: fx.GraphModule) -> fx.GraphModule:
 
 
 def get_name_to_node_map(gm: fx.GraphModule) -> Dict[str, fx.Node]:
-    name_to_node = {}
-    for node in gm.graph.nodes:
-        name_to_node[node.name] = node
-    return name_to_node
+    return {node.name: node for node in gm.graph.nodes}
 
 
 def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:

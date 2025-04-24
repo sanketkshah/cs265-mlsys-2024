@@ -22,7 +22,7 @@ model_names: List[str] = [
 
 model_batch_sizes: Dict[str, int] = {
     "Transformer": 4,
-    "Resnet18": 16,
+    "Resnet18": 1024,
     "Resnet50": 4,
 }
 
@@ -102,9 +102,6 @@ class Experiment:
 
     def graph_transformation(self, gm: fx.GraphModule, args: Any) -> fx.GraphModule:
         # Build the graph profiler
-        import pdb
-
-        pdb.set_trace()
         warm_up_iters, profile_iters = 2, 3
         graph_profiler = GraphProfiler(gm)
 
@@ -126,10 +123,11 @@ class Experiment:
         mem_limit = torch.cuda.get_device_properties(
             torch.cuda.current_device()
         ).total_memory
-        graph_profiler.run_checkpoint_selection(mem_limit // 2)
+        print(f"Memory limit: {mem_limit}")
+        recomps = graph_profiler.run_checkpoint_selection(mem_limit // 2)
 
         # Modify the graph based on the checkpointing decision
-        graph_profiler.apply_checkpointing()
+        graph_profiler.apply_checkpointing(recomps)
 
         # Perform static analysis of the graph again
         with torch.no_grad():

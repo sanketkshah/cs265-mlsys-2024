@@ -6,8 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 
 dependencies = [
-    "torch==2.2.2",
-    "numpy<2",
+    "torch",
+    "numpy",
     "torchvision",
     "torchaudio",
     "pyparsing",
@@ -15,8 +15,9 @@ dependencies = [
     "pip",
     "psutil",
     "setuptools",
-    "transformers==4.39.3",
+    "transformers",
     "pyyaml",
+    "expecttest",
 ]
 
 [tool.uv.pip]

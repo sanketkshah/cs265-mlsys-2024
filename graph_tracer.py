@@ -13,9 +13,9 @@ import torch.optim as optim
 import torch.utils._pytree as pytree
 from torch import fx
 from torch._subclasses.fake_tensor import FakeTensorMode
-from torch.distributed._tensor._op_schema import OpSchema, OutputSharding
 from torch.distributed._tensor.placement_types import DTensorSpec
 from torch.distributed.tensor import DTensor
+from torch.distributed.tensor._op_schema import OpSchema, OutputSharding
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.graph import CodeGen, _PyTreeCodeGen, _PyTreeInfo
 from torch.nn.utils import stateless
