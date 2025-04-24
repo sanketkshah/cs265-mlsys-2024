@@ -1,4 +1,5 @@
 import importlib
+import importlib
 from typing import Any, Dict, List
 
 import torch
@@ -7,11 +8,22 @@ import torch.nn as nn
 import torch.optim as optim
 from torchbenchmark.models import hf_Bert, resnet18, resnet50
 from torchbenchmark.util.model import BenchmarkModel
+from torchbenchmark.models import hf_Bert, resnet18, resnet50
+from torchbenchmark.util.model import BenchmarkModel
 
 from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 
 model_names: List[str] = [
+    "torchbenchmark.models.hf_Bert.Model",
+    "torchbenchmark.models.resnet18.Model",
+    "torchbenchmark.models.resnet50.Model",
+]
+
+actual_model_names: List[str] = [
+    "hf_Bert",
+    "resnet18",
+    "resnet50",
     "torchbenchmark.models.hf_Bert.Model",
     "torchbenchmark.models.resnet18.Model",
     "torchbenchmark.models.resnet50.Model",
@@ -38,6 +50,12 @@ class Experiment:
 
         model: BenchmarkModel = model_class(
             "train", "cuda", batch_size=batch_size, extra_args=extra_args
+        pos = model_name.rfind(".")
+        module = importlib.import_module(model_name[:pos])
+        model_class = getattr(module, model_name[(pos + 1) :])
+
+        model: BenchmarkModel = model_class(
+            "train", "cuda", batch_size=batch_size, extra_args=extra_args
         )
         self.model: nn.Module = model.model
         self.model_type = type(model)
@@ -47,8 +65,14 @@ class Experiment:
         if self.model_type == hf_Bert.Model:
 
             def bert_train_step(
+        self.example_inputs = model.example_inputs
+
+        if self.model_type == hf_Bert.Model:
+
+            def bert_train_step(
                 model: nn.Module, optim: optim.Optimizer, example_inputs: Any
             ):
+                loss = model(**example_inputs).loss
                 loss = model(**example_inputs).loss
                 loss = SEPFunction.apply(loss)
                 loss.backward()
@@ -57,7 +81,12 @@ class Experiment:
 
             self.train_step = bert_train_step
             self.optimizer: optim.Optimizer = model.optimizer
+            self.train_step = bert_train_step
+            self.optimizer: optim.Optimizer = model.optimizer
 
+        elif self.model_type in (resnet18.Model, resnet50.Model):
+            self.loss_fn = model.loss_fn
+            self.example_inputs = model.example_inputs[0]
         elif self.model_type in (resnet18.Model, resnet50.Model):
             self.loss_fn = model.loss_fn
             self.example_inputs = model.example_inputs[0]
@@ -68,11 +97,15 @@ class Experiment:
                 output = model(example_inputs)
                 target = torch.rand_like(output)
                 loss = self.loss_fn(output, target)
+                output = model(example_inputs)
+                target = torch.rand_like(output)
+                loss = self.loss_fn(output, target)
                 loss = SEPFunction.apply(loss)
                 loss.backward()
                 optim.step()
                 optim.zero_grad()
 
+            self.optimizer: optim.Optimizer = model.opt
             self.optimizer: optim.Optimizer = model.opt
             self.train_step = resnet_train_step
 
@@ -135,7 +168,6 @@ class Experiment:
 
 
 if __name__ == "__main__":
-    exp = Experiment(model_names[1], model_batch_sizes[model_names[1]])
     exp = Experiment(model_names[1], model_batch_sizes[model_names[1]])
     exp.init_opt_states()
     compiled_fn = compile(exp.train_step, exp.graph_transformation)
