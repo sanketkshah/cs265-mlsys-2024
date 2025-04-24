@@ -1,0 +1,33 @@
+[project]
+name = "cs265-mlsys-2024"
+version = "0.1.0"
+description = "Project for CS265: Big Data Systems"
+readme = "README.md"
+requires-python = ">=3.11"
+
+dependencies = [
+    "torch==2.2.2",
+    "numpy<2",
+    "torchvision",
+    "torchaudio",
+    "pyparsing",
+    "tabulate",
+    "pip",
+    "psutil",
+    "setuptools",
+    "transformers==4.39.3",
+    "pyyaml",
+]
+
+[tool.uv.pip]
+exclude-newer = "2023-05-01T02:07:43Z"
+
+[tool.uv.sources]
+torch = [{index = "pytorch-cu118"}]
+torchvision = [{index = "pytorch-cu118"}]
+torchaudio = [{index = "pytorch-cu118"}]
+
+[[tool.uv.index]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true

@@ -1,9 +1,11 @@
-import torch
-import torch.nn as nn
-import torch.fx as fx
 from typing import Dict
-from torch.fx.experimental.proxy_tensor import make_fx
+
+import torch
+import torch.fx as fx
+import torch.nn as nn
 from torch._functorch.partitioners import _extract_graph_with_inputs_outputs
+from torch.fx.experimental.proxy_tensor import make_fx
+
 from graph_tracer import SEPFunction
 
 
@@ -12,15 +14,20 @@ from graph_tracer import SEPFunction
 # gradients of the weight matrices with respect to the loss (sum in our
 # example). NOTE: The custom function mimics a simple two layer liner neural
 # network with relu activation functions and a sum loss function.
-def custom_fn(w1: torch.Tensor, w2: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+def custom_fn(
+    w1: torch.Tensor, w2: torch.Tensor, w3: torch.Tensor, x: torch.Tensor
+) -> torch.Tensor:
     z = torch.mm(w1, x)
     z = nn.functional.relu(z)
-    z = torch.mm(z, w2)
-    z = nn.functional.relu(z)
+    z_1 = torch.mm(w2, z)
+    z_1 = nn.functional.relu(z_1)
+    z_2 = torch.mm(w3, z)
+    z_2 = nn.functional.relu(z_2)
+    z = z_1 + z_2
     z = z.sum()
     z = SEPFunction.apply(z)
     z.backward()
-    return w1.grad, w2.grad
+    return w1.grad, w2.grad, w3.grad
 
 
 def replace_subsequent_uses_of(
@@ -78,7 +85,7 @@ def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
     first_back_access = name_to_node["t"]
     node_to_recompute = [name_to_node["relu"]]
     node_to_recompute_names = ["relu"]
-    nodes_required_to_recompute = [name_to_node["w1_1"], name_to_node["x_1"]]
+    nodes_required_to_recompute = [name_to_node["mm"]]
 
     # NOTE: we cannot directly use 'mm' to recompute 'relu' since 'mm' is not an
     # intermediate node that is retained (checkpointed).
@@ -122,12 +129,13 @@ def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
 
 if __name__ == "__main__":
     # Create two weight matrices that require gradients and one input data matrix
-    w1 = torch.randn(1024, 1024, device="cuda", requires_grad=True)
-    w2 = torch.randn(2048, 512, device="cuda", requires_grad=True)
     x = torch.randn(1024, 2048, device="cuda")
+    w1 = torch.randn(1024, 1024, device="cuda", requires_grad=True)
+    w2 = torch.randn(512, 1024, device="cuda", requires_grad=True)
+    w3 = torch.randn(512, 1024, device="cuda", requires_grad=True)
 
     # Create a graph module by tracing the the custom function with the given inputs
-    graph_module = make_fx(custom_fn)(w1, w2, x)
+    graph_module = make_fx(custom_fn)(w1, w2, w3, x)
     graph_module = remove_detach_nodes(graph_module)
     print("Original graph of custom fn (fwd+bwd): ")
     graph_module.graph.print_tabular()
@@ -136,7 +144,7 @@ if __name__ == "__main__":
     # NOTE: We have already captured the backward operations during tracing
     # hence we are executing in no grad mode
     with torch.no_grad():
-        old_grads = graph_module(w1, w2, x)
+        old_grads = graph_module(w1, w2, w3, x)
 
     # Apply the activation checkpointing algorithm (check new node 'relu_2')
     new_graph_module = activation_checkpointing(graph_module)
@@ -146,7 +154,7 @@ if __name__ == "__main__":
     # Obtain the gradients of (w1, w2) using x as input to the activation
     # checkpointed function to recalculate them
     with torch.no_grad():
-        new_grads = new_graph_module(w1, w2, x)
+        new_grads = new_graph_module(w1, w2, w3, x)
 
     # Verify that gradients produced with activation checkpointing equal the
     # ones obtained earlier with no optimization.

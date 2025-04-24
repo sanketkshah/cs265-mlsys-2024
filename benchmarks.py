@@ -2,11 +2,12 @@ import importlib
 from typing import Any, Dict, List
 
 import torch
+import torch.fx as fx
 import torch.nn as nn
 import torch.optim as optim
-import torch.fx as fx
 from torchbenchmark.models import hf_Bert, resnet18, resnet50
 from torchbenchmark.util.model import BenchmarkModel
+
 from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 
@@ -84,10 +85,14 @@ class Experiment:
         self.optimizer.zero_grad()
 
     def graph_transformation(self, gm: fx.GraphModule, args: Any) -> fx.GraphModule:
-        print(gm.graph)
+        # Build the graph profiler
+        import pdb
+
+        pdb.set_trace()
         warm_up_iters, profile_iters = 2, 3
         graph_profiler = GraphProfiler(gm)
 
+        # Perform static analysis of the graph
         with torch.no_grad():
             for _ in range(warm_up_iters):
                 graph_profiler.run(*args)
@@ -96,7 +101,32 @@ class Experiment:
             for _ in range(profile_iters):
                 graph_profiler.run(*args)
             graph_profiler.aggregate_stats()
-            graph_profiler.print_stats()
+            graph_profiler.print_stats(
+                to_file=f"results/graph_prof_before_checkpoint_{self.model_name}_{self.batch_size}.txt"
+            )
+
+        # Use the static data to decide which nodes to checkpoint
+        # Get the memory limit from CUDA device
+        mem_limit = torch.cuda.get_device_properties(
+            torch.cuda.current_device()
+        ).total_memory
+        graph_profiler.run_checkpoint_selection(mem_limit // 2)
+
+        # Modify the graph based on the checkpointing decision
+        graph_profiler.apply_checkpointing()
+
+        # Perform static analysis of the graph again
+        with torch.no_grad():
+            for _ in range(warm_up_iters):
+                graph_profiler.run(*args)
+            graph_profiler.reset_stats()
+
+            for _ in range(profile_iters):
+                graph_profiler.run(*args)
+            graph_profiler.aggregate_stats()
+            graph_profiler.print_stats(
+                to_file=f"results/graph_prof_after_checkpoint_{self.model_name}_{self.batch_size}.txt"
+            )
 
         return gm
 
@@ -106,7 +136,7 @@ class Experiment:
 
 
 if __name__ == "__main__":
-    exp = Experiment(model_names[0], model_batch_sizes[model_names[0]])
+    exp = Experiment(model_names[1], model_batch_sizes[model_names[1]])
     exp.init_opt_states()
     compiled_fn = compile(exp.train_step, exp.graph_transformation)
     compiled_fn(exp.model, exp.optimizer, exp.example_inputs)

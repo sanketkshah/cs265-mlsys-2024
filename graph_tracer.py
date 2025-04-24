@@ -13,7 +13,6 @@ import torch.optim as optim
 import torch.utils._pytree as pytree
 from torch import fx
 from torch._subclasses.fake_tensor import FakeTensorMode
-from torch.distributed._functional_collectives import all_reduce
 from torch.distributed._spmd.api import SPMD_DECOMP_TABLE
 from torch.distributed._tensor.op_schema import OpSchema, OutputSharding
 from torch.distributed._tensor.ops.utils import register_prop_rule
@@ -211,7 +210,6 @@ def _compile(func: Callable, *args: Any, **kwargs: Any):
 
     # Lift states and parameters as function arguments so that make_fx
     # can trace operations applied to them
-
     def stateless_func(
         func: Callable,
         params: Dict[str, nn.Parameter],
@@ -220,11 +218,12 @@ def _compile(func: Callable, *args: Any, **kwargs: Any):
         args: Any,
         kwargs: Any,
     ):
-        with stateless._reparametrize_module(
-            mod, {**params, **buffers}
-        ), _rematerialize_optimizer(
-            opt, named_states, params
-        ) if opt else nullcontext():
+        with (
+            stateless._reparametrize_module(mod, {**params, **buffers}),
+            _rematerialize_optimizer(opt, named_states, params)
+            if opt
+            else nullcontext(),
+        ):
             # Installing hooks onto gradients to identify the gradients.
             with gradients_tagging(params):
                 ret = func(*args, **kwargs)
