@@ -257,8 +257,8 @@ class GraphProfiler(fx.Interpreter):
                 if len(node.all_input_nodes) > 0:
                     recomp_time += self.node_info[node].run_time
                     recomp_srcs.extend(node.all_input_nodes)
-                elif node.name.startswith("arange"):
-                    continue  # arange is a constant node
+                elif node.name.startswith("arange") or node.name.startswith("ones"):
+                    continue  # constant nodes
                 else:
                     raise ValueError(f"Node {node.name} has no allowed input nodes")
         return set(allowed_recomp_srcs), recomp_time

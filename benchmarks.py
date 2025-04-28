@@ -1,3 +1,4 @@
+import importlib
 from typing import Any, Dict, List
 
 import torch
@@ -5,25 +6,22 @@ import torch.fx as fx
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.testing._internal.distributed._tensor.common_dtensor import (
-    ModelArgs,
-    Transformer,
-)
+from torchbenchmark.util.model import BenchmarkModel
 from torchvision.models import resnet18, resnet50
-
-torch.manual_seed(0)  # Set seed for reproducibility
 
 from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 
+torch.manual_seed(0)  # Set seed for reproducibility
+
 model_names: List[str] = [
-    "Transformer",
+    "torchbenchmark.models.hf_Bert.Model",
     "Resnet18",
     "Resnet50",
 ]
 
 model_batch_sizes: Dict[str, int] = {
-    "Transformer": 2048,
+    "torchbenchmark.models.hf_Bert.Model": 32,
     "Resnet18": 1024,
     "Resnet50": 256,
 }
@@ -38,35 +36,28 @@ class Experiment:
         self.model_name = model_name
         self.batch_size = batch_size
 
-        if self.model_name == "Transformer":
-            vocab_size = 2048
-            bsz, seq_len = self.batch_size, 256
-            with torch.device(dev):
-                model_args = ModelArgs(
-                    n_layers=8,
-                    n_heads=4,
-                    vocab_size=vocab_size,
-                    max_seq_len=seq_len,
-                    dropout_p=0.1,
-                )
-                self.model = Transformer(model_args)
-            src = torch.randint(0, vocab_size, (bsz, seq_len), device=dev)
-            tgt = torch.randint(0, vocab_size, (bsz, seq_len), device=dev)
-            self.example_inputs = (src, tgt)
+        if self.model_name == "torchbenchmark.models.hf_Bert.Model":
+            pos = model_name.rfind(".")
+            module = importlib.import_module(model_name[:pos])
+            model_class = getattr(module, model_name[(pos + 1) :])
 
-            def transformer_train_step(
+            model: BenchmarkModel = model_class(
+                "train", "cuda", batch_size=batch_size, extra_args=extra_args
+            )
+            self.model: nn.Module = model.model
+            self.example_inputs = model.example_inputs
+
+            def bert_train_step(
                 model: nn.Module, optim: optim.Optimizer, example_inputs: Any
             ):
-                loss = self.loss_fn(model(example_inputs[0]), example_inputs[1])
+                loss = model(**example_inputs).loss
                 loss = SEPFunction.apply(loss)
                 loss.backward()
                 optim.step()
                 optim.zero_grad()
 
-            self.train_step = transformer_train_step
-            self.optimizer = optim.Adam(
-                self.model.parameters(), lr=1e-2, fused=True, capturable=True
-            )
+            self.train_step = bert_train_step
+            self.optimizer: optim.Optimizer = model.optimizer
 
         elif self.model_name in ["Resnet18", "Resnet50"]:
             inp = torch.randn(self.batch_size, 3, 224, 224, device=dev)
