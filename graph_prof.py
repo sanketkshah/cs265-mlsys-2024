@@ -50,7 +50,7 @@ class MemStats:
 
 @dataclass
 class NodeInfo:
-    rank: int = 0
+    rank: float = 0.0
     node_type: NodeType | None = None
     run_time: float = 1.0
     start_time: float = 0.0
@@ -64,7 +64,7 @@ class NodeInfo:
     last_forward_uses: List[fx.Node] = field(default_factory=list)
     first_back_uses: List[fx.Node] = field(default_factory=list)
     inactive_time: float = 0.0
-    recomp_srcs: List[fx.Node] = field(default_factory=list)
+    recomp_srcs: Set[fx.Node] = field(default_factory=set)
     recomp_time: float = 0.0
     total_recomp_time: float = 0.0
     recompute_ratio: float = 0.0
@@ -186,9 +186,7 @@ class GraphProfiler(fx.Interpreter):
             tensor = self.env[o_node]
             assert isinstance(tensor, torch.Tensor)
             if cpu_ref is None:
-                cpu_ref = torch.zeros(
-                    tensor.size(), dtype=tensor.dtype, layout=tensor.layout
-                ).pin_memory()
+                cpu_ref = torch.zeros_like(tensor, device="cpu").pin_memory()
             assert cpu_ref.is_pinned, f"CPU ref is not pinned for {o_node.name}"
 
             swap_start_event = torch.cuda.Event(enable_timing=True)
@@ -217,13 +215,12 @@ class GraphProfiler(fx.Interpreter):
         # 4) Update the state of intermediate tensor in NodeInfo
         nodes_to_fetch = self.node_info[node].first_back_uses
         for p_node in nodes_to_fetch:
-            p_info = self.node_info[p_node]
-
-            # If the node is a recomputation node, we don't need to swap it in
-            if p_info.is_recomp:
+            # If the node is already in GPU memory, skip it
+            if self.env[p_node].is_cuda:
                 continue
 
             # Else, we need to swap it in
+            p_info = self.node_info[p_node]
             assert p_info.cpu_ref is not None, f"CPU ref is not set for {p_node.name}"
             assert p_info.cpu_ref.is_pinned, f"CPU ref is not pinned for {p_node.name}"
             cpu_ref = cast(torch.Tensor, p_info.cpu_ref)
@@ -241,7 +238,6 @@ class GraphProfiler(fx.Interpreter):
             self.env[p_node] = tensor.contiguous()
             tensor = None
             torch.cuda.synchronize()
-            del p_info.cpu_ref
             self.swapped_memory -= p_info.memory_size
             assert self.swapped_memory >= 0, (
                 f"Swapped memory is less than zero {self.swapped_memory}"
@@ -261,9 +257,11 @@ class GraphProfiler(fx.Interpreter):
                 if len(node.all_input_nodes) > 0:
                     recomp_time += self.node_info[node].run_time
                     recomp_srcs.extend(node.all_input_nodes)
+                elif node.name.startswith("arange"):
+                    continue  # arange is a constant node
                 else:
                     raise ValueError(f"Node {node.name} has no allowed input nodes")
-        return allowed_recomp_srcs, recomp_time
+        return set(allowed_recomp_srcs), recomp_time
 
     def _initialization(self, candidate_set):
         """
@@ -305,7 +303,7 @@ class GraphProfiler(fx.Interpreter):
                 self.node_info[rp].recomp_srcs.remove(cand)
 
                 # Add current candidate's recomputation sources
-                self.node_info[rp].recomp_srcs.extend(self.node_info[cand].recomp_srcs)
+                self.node_info[rp].recomp_srcs.update(self.node_info[cand].recomp_srcs)
 
                 # Update recomputation time
                 self.node_info[rp].recomp_time += self.node_info[cand].recomp_time
@@ -330,7 +328,7 @@ class GraphProfiler(fx.Interpreter):
                 # Remove target from recomputation sources
                 self.node_info[cand].recomp_srcs.remove(t)
                 # Add target's recomputation sources
-                self.node_info[cand].recomp_srcs.extend(self.node_info[t].recomp_srcs)
+                self.node_info[cand].recomp_srcs.update(self.node_info[t].recomp_srcs)
                 # Update recomputation time
                 self.node_info[cand].recomp_time += self.node_info[t].recomp_time
 
@@ -367,19 +365,22 @@ class GraphProfiler(fx.Interpreter):
             "GraphProfiler must be profiled before running checkpoint selection"
         )
         # Input parameters
-        candidate_set = self.intermediate_nodes[:]
+        candidate_set = self.intermediate_nodes
         max_peak_memory = max(
-            [self.node_info[node].peak_total_mem for node in self.module.graph.nodes]
+            self.node_info[node].peak_total_mem for node in self.module.graph.nodes
         )
         # Algorithm B implementation
         mem_consumption = max_peak_memory
         # Initialize candidates
         self._initialization(candidate_set)
         # Initialize empty recomputation set
-        recomps = set()
+        recomps = []
 
         # Main loop
         while len(candidate_set) > 0:
+            # Check if memory constraint is satisfied
+            if (mem_consumption - mem_limit) <= 0:
+                break
             # Get candidate with maximum recomputation benefit
             max_recomp_ratio = max(
                 [self.node_info[cand].recompute_ratio for cand in candidate_set]
@@ -390,7 +391,7 @@ class GraphProfiler(fx.Interpreter):
                 if self.node_info[cand].recompute_ratio == max_recomp_ratio
             )
             # Add to recomputation set
-            recomps.add(r_cand)
+            recomps.append(r_cand)
             # Current candidate
             cand = r_cand
             # Remove from candidate set
@@ -401,9 +402,6 @@ class GraphProfiler(fx.Interpreter):
             self._update_candidates(cand, recomp_cnt, recomps, candidate_set)
             # Update memory consumption
             mem_consumption -= self.node_info[cand].memory_size
-            # Check if memory constraint is satisfied
-            if (mem_consumption - mem_limit) <= 0:
-                break
         # Set a flag to indicate that checkpoint selection has been run
         self.is_recomp_selected = True
 
@@ -417,31 +415,44 @@ class GraphProfiler(fx.Interpreter):
             if node in old_node_users:
                 node.replace_input_with(old_node, new_node)
 
-    def apply_checkpointing(self, recomps: Set[fx.Node]):
+    def apply_checkpointing(self, recomps: List[fx.Node]):
         """
         Apply checkpointing to the graph based on the recomputation set.
         """
-        # Check that recomputation selection has been run
+        # Check that recomputation selection has been run and that all recomputations have a first backward access node
         assert self.is_recomp_selected, (
             "Recomputation selection must be run before applying checkpointing"
         )
-
+        assert all(
+            self.node_info[recomp].first_back_access is not None for recomp in recomps
+        ), "All recomputations must have a first backward access node"
         recomp_names = [node.name for node in recomps]
 
-        for node in recomps:
+        # Print the recomputation set
+        print(f"Recomputation set: {recomps}")
+        for node in reversed(recomps):
             # Obtain a sub-graph that recomputes the required nodes
             recompute_subgraph = _extract_graph_with_inputs_outputs(
                 joint_graph=self.module.graph,
                 inputs=self.node_info[node].recomp_srcs,
                 outputs=[node],
             )
-            print("Extracted recomputation sub-graph: ")
+            print(f"Extracted recomputation sub-graph for {node.name}: ")
             recompute_subgraph.print_tabular()
 
             # Insert the nodes of the new sub-graph in the old graph before the first
             # backward access of the node to be recomputed.
             node_first_back_access = self.node_info[node].first_back_access
             with self.module.graph.inserting_before(node_first_back_access):
+                # Sanity check that the node_first_back_access is after the separator
+                assert node_first_back_access is not None, (
+                    f"Node {node.name} has no first backward access node"
+                )
+                assert (
+                    self.node_info[node_first_back_access].rank
+                    > self.node_info[self.backward_start].rank
+                ), f"Node {node.name} is being inserted before the backward pass"
+
                 # initialize name to node mapping
                 name_to_node = {node.name: node for node in self.module.graph.nodes}
                 name_to_node.pop("output")
@@ -454,6 +465,7 @@ class GraphProfiler(fx.Interpreter):
                     new_node = self.module.graph.node_copy(
                         old_node, arg_transform=lambda arg: name_to_node[arg.name]
                     )
+                    print(f"Created new node {new_node.name} for {old_node.name}")
 
                     # Replace all the uses of the old node with new recomputation node
                     if old_node.name in recomp_names:
@@ -461,50 +473,58 @@ class GraphProfiler(fx.Interpreter):
                             old_node=real_old_node, new_node=new_node
                         )
 
-                    # Remove the old node from the first back access to prevent
-                    # it from being swapped in when it doesn't exist
-                    first_back_access = self.node_info[real_old_node].first_back_access
-                    if first_back_access is not None:
-                        self.node_info[first_back_access].first_back_uses.remove(
-                            real_old_node
-                        )
-
                     # Add the new node info
                     n_info = NodeInfo()
-                    n_info.rank = self.rank
-                    self.rank += 1
+                    n_info.rank = self.node_info[node_first_back_access].rank - 0.5
                     n_info.node_type = NodeType.RECOMP
                     n_info.is_recomp = True
+                    for input_node in new_node.all_input_nodes:
+                        if input_node in self.intermediate_nodes:
+                            n_info.first_back_uses.append(input_node)
                     name_to_node[old_node.name] = new_node
                     self.node_info[new_node] = n_info
 
-                # Update recomp_srcs first_back_access to ensure that it's
-                # swapped back in
-                swap_in_rank = self.node_info[node_first_back_access].rank
-                swap_in_node = next(
-                    name_to_node[node.name]
-                    for node in recompute_subgraph.nodes
-                    if node.op not in ["placeholder", "output"]
-                )
-                for prev_node in self.node_info[node].recomp_srcs:
-                    old_first_back_access = self.node_info[prev_node].first_back_access
-                    if (
-                        old_first_back_access is not None
-                        and self.node_info[old_first_back_access].rank > swap_in_rank
-                    ):
-                        # Replace first back access of prev_node with swap_in_node
-                        self.node_info[old_first_back_access].first_back_uses.remove(
-                            prev_node
-                        )
-                        self.node_info[swap_in_node].first_back_uses.append(prev_node)
-                        self.node_info[prev_node].first_back_access = swap_in_node
+        # UPDATE ACCESS INFO FOR CORRECT SWAPPING
+        for node in recomps:
+            # Remove the node from last_forward_uses to prevent it from
+            # being swapped out
+            last_forward_access = self.node_info[node].last_forward_access
+            if last_forward_access is not None:
+                self.node_info[last_forward_access].last_forward_uses.remove(node)
+                last_forward_access = None
+
+            # Remove the old node from the first_back_access to prevent
+            # it from being swapped in when it doesn't exist
+            first_back_access = self.node_info[node].first_back_access
+            if (
+                first_back_access is not None
+                and node in self.node_info[first_back_access].first_back_uses
+            ):
+                self.node_info[first_back_access].first_back_uses.remove(node)
+                self.node_info[node].first_back_access = None
 
         # Lint the graph to ensure it is valid
         self.module.graph.lint()
         # Recompile the module
         self.module.recompile()
+        # Update the last uses of the nodes in the interpreter
+        # Run through reverse nodes and record the first instance of a use
+        # of a given node. This represents the *last* use of the node in the
+        # execution order of the program, which we will use to free unused
+        # values
+        node_to_last_use: dict[fx.Node, fx.Node] = {}
+        self.user_to_last_uses: dict[fx.Node, list[fx.Node]] = {}
 
-    def get_total_memory_breakdown(self) -> int:
+        def register_last_uses(n: fx.Node, user: fx.Node):
+            if n not in node_to_last_use:
+                node_to_last_use[n] = user
+                self.user_to_last_uses.setdefault(user, []).append(n)
+
+        for node in reversed(self.module.graph.nodes):
+            for n in node._input_nodes:
+                register_last_uses(n, node)
+
+    def get_total_memory_breakdown(self) -> MemStats:
         grad_mem = 0
         act_mem = 0
         other_mem = 0
@@ -541,11 +561,6 @@ class GraphProfiler(fx.Interpreter):
     def run_node(self, node: fx.Node) -> Any:
         if node.op == OP.PLACEHOLDER:
             return super().run_node(node)
-
-        if node.name == "cudnn_batch_norm_20":
-            import pdb
-
-            pdb.set_trace()
 
         # If you are in the backward pass region and one of the feature maps 'x'
         # was swapped out, and if node 'n' will use this feature map 'x' as one
@@ -621,6 +636,7 @@ class GraphProfiler(fx.Interpreter):
     def print_stats(self, to_file: str = None):
         headers: List[str] = [
             "Node",
+            "Node Type",
             "Target",
             "Size (B)",
             "Avg runtime (ms)",
@@ -635,6 +651,7 @@ class GraphProfiler(fx.Interpreter):
             n_info = self.node_info[node]
             val_list = [
                 node.name,
+                NodeType(n_info.node_type).name,
                 node._pretty_print_target(node.target),
                 n_info.memory_size,
                 n_info.run_time,

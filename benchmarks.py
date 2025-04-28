@@ -11,6 +11,8 @@ from torch.testing._internal.distributed._tensor.common_dtensor import (
 )
 from torchvision.models import resnet18, resnet50
 
+torch.manual_seed(0)  # Set seed for reproducibility
+
 from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 
@@ -21,9 +23,9 @@ model_names: List[str] = [
 ]
 
 model_batch_sizes: Dict[str, int] = {
-    "Transformer": 4,
+    "Transformer": 2048,
     "Resnet18": 1024,
-    "Resnet50": 4,
+    "Resnet50": 256,
 }
 
 
@@ -102,7 +104,7 @@ class Experiment:
 
     def graph_transformation(self, gm: fx.GraphModule, args: Any) -> fx.GraphModule:
         # Build the graph profiler
-        warm_up_iters, profile_iters = 2, 3
+        warm_up_iters, profile_iters = 1, 1  # 2, 3
         graph_profiler = GraphProfiler(gm)
 
         # Perform static analysis of the graph
@@ -123,6 +125,7 @@ class Experiment:
         mem_limit = torch.cuda.get_device_properties(
             torch.cuda.current_device()
         ).total_memory
+
         print(f"Memory limit: {mem_limit}")
         recomps = graph_profiler.run_checkpoint_selection(mem_limit // 2)
 
