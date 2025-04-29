@@ -41,11 +41,13 @@ class MemStats:
         grad_mem: int,
         act_mem: int,
         other_mem: int,
+        recomp_mem: int,
     ) -> None:
         self.param_and_opt_state_memory = param_and_opt_state_mem
         self.grad_memory = grad_mem
         self.activation_memory = act_mem
         self.other_memory = other_mem
+        self.recomp_memory = recomp_mem
 
 
 @dataclass
@@ -200,7 +202,6 @@ class GraphProfiler(fx.Interpreter):
             o_info.cpu_ref = cpu_ref
             self.env[o_node] = cpu_ref
             del tensor
-            tensor = None
             cpu_ref = None
             self.swapped_memory += o_info.memory_size
             swap_time = swap_start_event.elapsed_time(swap_end_event)
@@ -528,9 +529,10 @@ class GraphProfiler(fx.Interpreter):
         grad_mem = 0
         act_mem = 0
         other_mem = 0
+        recomp_mem = 0
         param_and_opt_state_mem = self.param_and_opt_state_memory
         for node in self.env.keys():
-            if node.op == OP.PLACEHOLDER:
+            if node.op == OP.PLACEHOLDER or self.env[node] is None:
                 continue
             node_type = self.node_info[node].node_type
             memory_size = self.node_info[node].memory_size
@@ -538,9 +540,17 @@ class GraphProfiler(fx.Interpreter):
                 grad_mem += memory_size
             elif node_type == NodeType.ACT:
                 act_mem += memory_size
-            else:
+            elif node_type == NodeType.RECOMP:
+                recomp_mem += memory_size
+            elif node_type == NodeType.OTHER:
                 other_mem += memory_size
-        mem_stats = MemStats(param_and_opt_state_mem, grad_mem, act_mem, other_mem)
+            elif node_type == NodeType.PARAM:
+                continue  # Parameter memory is not included in the memory breakdown
+            else:
+                raise ValueError(f"Unknown node type: {node_type}")
+        mem_stats = MemStats(
+            param_and_opt_state_mem, grad_mem, act_mem, other_mem, recomp_mem
+        )
         return mem_stats
 
     def run(
@@ -633,7 +643,7 @@ class GraphProfiler(fx.Interpreter):
         self.node_runtimes.clear()
         self.node_swap_times.clear()
 
-    def print_stats(self, to_file: str = None):
+    def print_stats(self, to_file: str | None = None):
         headers: List[str] = [
             "Node",
             "Node Type",
@@ -641,6 +651,11 @@ class GraphProfiler(fx.Interpreter):
             "Size (B)",
             "Avg runtime (ms)",
             "Peak Memory (B)",
+            "Parameter Memory (B)",
+            "Gradient Memory (B)",
+            "Activation Memory (B)",
+            "Other Memory (B)",
+            "Recomputation Memory (B)",
             "Swap Time (ms)",
         ]
         node_summaries: List[List[Any]] = []
@@ -649,6 +664,7 @@ class GraphProfiler(fx.Interpreter):
             if node.op == OP.PLACEHOLDER:
                 continue
             n_info = self.node_info[node]
+            assert n_info.mem_stats is not None
             val_list = [
                 node.name,
                 NodeType(n_info.node_type).name,
@@ -656,13 +672,17 @@ class GraphProfiler(fx.Interpreter):
                 n_info.memory_size,
                 n_info.run_time,
                 n_info.peak_total_mem,
+                n_info.mem_stats.param_and_opt_state_memory,
+                n_info.mem_stats.grad_memory,
+                n_info.mem_stats.activation_memory,
+                n_info.mem_stats.other_memory,
+                n_info.mem_stats.recomp_memory,
             ]
             if node in self.intermediate_nodes:
                 val_list.append(n_info.swap_time)
             else:
                 val_list.append("")
             node_summaries.append(val_list)
-        # print(tabulate.tabulate(node_summaries, headers=headers))
         if to_file:
             with open(to_file, "w") as f:
                 writer = csv.writer(f)

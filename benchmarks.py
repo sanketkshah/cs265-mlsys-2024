@@ -1,6 +1,10 @@
+import argparse
 import importlib
-from typing import Any, Dict, List
+import statistics as stats
+from datetime import datetime
+from typing import Any, List
 
+import pandas as pd
 import torch
 import torch.fx as fx
 import torch.nn as nn
@@ -19,12 +23,6 @@ model_names: List[str] = [
     "Resnet18",
     "Resnet50",
 ]
-
-model_batch_sizes: Dict[str, int] = {
-    "torchbenchmark.models.hf_Bert.Model": 32,
-    "Resnet18": 1024,
-    "Resnet50": 256,
-}
 
 
 class Experiment:
@@ -95,7 +93,7 @@ class Experiment:
 
     def graph_transformation(self, gm: fx.GraphModule, args: Any) -> fx.GraphModule:
         # Build the graph profiler
-        warm_up_iters, profile_iters = 1, 1  # 2, 3
+        warm_up_iters, profile_iters = 2, 3
         graph_profiler = GraphProfiler(gm)
 
         # Perform static analysis of the graph
@@ -113,12 +111,13 @@ class Experiment:
 
         # Use the static data to decide which nodes to checkpoint
         # Get the memory limit from CUDA device
-        mem_limit = torch.cuda.get_device_properties(
-            torch.cuda.current_device()
-        ).total_memory
+        mem_limit = (
+            torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory
+            // 4
+        )
 
-        print(f"Memory limit: {mem_limit}")
-        recomps = graph_profiler.run_checkpoint_selection(mem_limit // 2)
+        print(f"Memory limit: {mem_limit / 1024 / 1024 / 1024} GB")
+        recomps = graph_profiler.run_checkpoint_selection(mem_limit)
 
         # Modify the graph based on the checkpointing decision
         graph_profiler.apply_checkpointing(recomps)
@@ -144,7 +143,48 @@ class Experiment:
 
 
 if __name__ == "__main__":
-    exp = Experiment(model_names[1], model_batch_sizes[model_names[1]])
+    # Get the model name and batch size from the command line
+    # use argparse to get the model name and batch size
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, required=True)
+    parser.add_argument("--batch_size", type=int, required=True)
+    args = parser.parse_args()
+
+    # Run the experiment for each model and batch size
+    print(f"Running experiment for {args.model} with batch size {args.batch_size}")
+    exp = Experiment(args.model, args.batch_size)
     exp.init_opt_states()
     compiled_fn = compile(exp.train_step, exp.graph_transformation)
     compiled_fn(exp.model, exp.optimizer, exp.example_inputs)
+    torch.cuda.synchronize()
+
+    num_iters = 3
+    run_times = []
+    torch.cuda.reset_peak_memory_stats()
+    for _ in range(num_iters):
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        compiled_fn(exp.model, exp.optimizer, exp.example_inputs)
+        end_event.record()
+        torch.cuda.synchronize()
+        run_times.append(start_event.elapsed_time(end_event))
+    run_time = stats.mean(run_times)
+    peak_memory = torch.cuda.max_memory_allocated()
+
+    # Save results to dataframe
+    result = pd.DataFrame(
+        [
+            {
+                "Model": args.model,
+                "Batch Size": args.batch_size,
+                "Run Time": run_time,
+                "Peak Memory": peak_memory,
+            }
+        ]
+    )
+
+    # Save results to CSV
+    result.to_csv(
+        f"results/results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", index=False
+    )
