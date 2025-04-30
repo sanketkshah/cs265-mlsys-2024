@@ -154,7 +154,9 @@ if __name__ == "__main__":
     print(f"Running experiment for {args.model} with batch size {args.batch_size}")
     exp = Experiment(args.model, args.batch_size)
     exp.init_opt_states()
-    compiled_fn = compile(exp.train_step, exp.graph_transformation)
+    compiled_fn = compile(
+        exp.train_step, exp.graph_transformation
+    )  # for no ac exp.graph_transformation --> lambda gm, args: gm
     compiled_fn(exp.model, exp.optimizer, exp.example_inputs)
     torch.cuda.synchronize()
 
@@ -176,7 +178,7 @@ if __name__ == "__main__":
     result = pd.DataFrame(
         [
             {
-                "Model": args.model,
+                "Model": args.model,  #  + " (No AC)" for no ac
                 "Batch Size": args.batch_size,
                 "Run Time": run_time,
                 "Peak Memory": peak_memory,

@@ -8,9 +8,10 @@ model_names: List[str] = [
 ]
 
 model_batch_sizes: Dict[str, List[int]] = {
-    "torchbenchmark.models.hf_Bert.Model": [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-    "Resnet18": [500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000],
-    "Resnet50": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+    "torchbenchmark.models.hf_Bert.Model": [10 * i for i in range(1, 11)]
+    + [2**i for i in range(13)],
+    "Resnet18": [500 * i for i in range(1, 11)] + [2**i for i in range(13)],
+    "Resnet50": [100 * i for i in range(1, 11)] + [2**i for i in range(13)],
 }
 
 parameters_to_sweep = {
@@ -24,7 +25,9 @@ parameters_to_sweep = {
 if __name__ == "__main__":
     experiments = []
     for ((model_name, batch_size),) in itertools.product(*parameters_to_sweep.values()):
-        experiment_name = f"results/log_{model_name}_{batch_size}.txt"
+        experiment_name = (
+            f"results/log_{model_name}_{batch_size}.txt"  # add _no_ac for no ac
+        )
 
         experiments.append(
             f"python benchmarks.py "
